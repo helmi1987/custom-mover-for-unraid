@@ -1,225 +1,297 @@
 #!/bin/bash
 # ==============================================================================
-# Smart Mover Executor V1.0
-# Logik: Find -> Filter (Global+Share) -> Pipe to Mover -> Smart Cleanup
-# Usage: ./custommover_run.sh [--run]
+# Script: smart_mover.sh
+# Description: Executes the Smart Mover logic based on smart_mover.ini
+#              Filters files by age (CMIN precision)/exclude and pipes to Unraid Mover.
 # ==============================================================================
 
-# ------------------------------------------------------------------------------
-# KONFIGURATION & SETUP
-# ------------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INI_FILE="$SCRIPT_DIR/smart_mover.ini"
-DRY_RUN=true
+set -u
 
-# Farben
+# --- CONSTANTS & DEFAULTS ---
+SCRIPT_DIR="$(dirname "$(realpath "$0")")"
+INI_FILE="$SCRIPT_DIR/smart_mover.ini"
+TEMP_EXCLUDE_FILE="/tmp/smart_mover_excludes.tmp"
+
+# Flags
+DRY_RUN=true
+FORCE_AGE=false
+FORCE_ALL=false
+TARGET_SHARES=""
+
+# Colors for Console Output
 GREEN='\033[0;32m'
-BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-# Check Arguments
-for arg in "$@"; do
-    if [[ "$arg" == "--run" ]]; then
-        DRY_RUN=false
-    fi
+# --- ERROR HANDLING ---
+trap 'handle_error $? $LINENO' ERR
+
+handle_error() {
+    local exit_code=$1
+    local line_no=$2
+    log_message "ERROR" "Script failed at line $line_no with exit code $exit_code"
+    rm -f "$TEMP_EXCLUDE_FILE"
+    exit $exit_code
+}
+
+# --- ARGUMENT PARSING ---
+show_help() {
+    echo "Usage: $(basename "$0") [OPTIONS]"
+    echo ""
+    echo "Options:"
+    echo "  --run              ACTIVATE script (Disable Dry-Run)"
+    echo "  --force            Ignore file age (min_age), but respect excludes"
+    echo "  --force-all        Ignore file age AND excludes (Move everything!)"
+    echo "  --share \"Name\"     Only process specific shares (comma separated)"
+    echo "  --help             Show this help"
+    exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --run)       DRY_RUN=false; shift ;;
+        --force)     FORCE_AGE=true; shift ;;
+        --force-all) FORCE_ALL=true; FORCE_AGE=true; shift ;;
+        --share)     TARGET_SHARES="$2"; shift 2 ;;
+        --help)      show_help ;;
+        *)           echo "Unknown option: $1"; show_help ;;
+    esac
 done
 
-# Check INI
+# --- CONFIG LOADING ---
 if [[ ! -f "$INI_FILE" ]]; then
-    echo -e "${RED}Fehler: $INI_FILE nicht gefunden. Bitte erst setup.sh ausführen.${NC}"
+    echo -e "${RED}Error: Configuration file not found at $INI_FILE${NC}"
+    echo "Please run setup.sh first."
     exit 1
 fi
 
-# Hilfsfunktion: Wert aus INI lesen
-get_ini_value() {
-    local section="$1"
-    local key="$2"
-    sed -n "/^\[$section\]/,/^\[/p" "$INI_FILE" | grep "^$key=" | cut -d'=' -f2-
+get_global_val() {
+    local key=$1
+    sed -n "/^\[GLOBAL\]/,/^\[/p" "$INI_FILE" | grep "^$key=" | cut -d= -f2-
 }
 
-# Globale Config laden
-MOVER_BIN=$(get_ini_value "GLOBAL" "mover_bin")
-LOG_FILE=$(get_ini_value "GLOBAL" "log_file")
-GLOBAL_EXCLUDES_RAW=$(get_ini_value "GLOBAL" "global_excludes")
+MOVER_BIN=$(get_global_val "mover_bin")
+LOG_DIR_PATH=$(get_global_val "log_dir")
+GLOBAL_MIN_AGE=$(get_global_val "min_age")
+GLOBAL_EXCLUDES=$(get_global_val "global_excludes")
 
-# Log Verzeichnis erstellen
-mkdir -p "$(dirname "$LOG_FILE")"
+[[ -z "$MOVER_BIN" ]] && MOVER_BIN="/usr/local/bin/move"
+[[ -z "$GLOBAL_MIN_AGE" ]] && GLOBAL_MIN_AGE=0
+[[ -z "$LOG_DIR_PATH" ]] && LOG_DIR_PATH="$SCRIPT_DIR/logs"
 
-# Log Rotation (altes Log umbenennen)
-if [[ -f "$LOG_FILE" ]]; then
-    mv "$LOG_FILE" "${LOG_FILE}.old"
-fi
+LOG_FILE="$LOG_DIR_PATH/smart_mover.log"
 
-# Logging Funktion (Konsole + Datei)
-log() {
-    local msg="$1"
-    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-    echo -e "$msg"
-    # Farben entfernen für Logfile
-    echo "[$timestamp] $(echo -e "$msg" | sed 's/\x1b\[[0-9;]*m//g')" >> "$LOG_FILE"
-}
-
-# ------------------------------------------------------------------------------
-# START
-# ------------------------------------------------------------------------------
-if $DRY_RUN; then
-    log "${YELLOW}=== SMART MOVER GESTARTET (DRY-RUN) ===${NC}"
-    log "Nutze --run für scharfen Modus."
-else
-    log "${GREEN}=== SMART MOVER GESTARTET (LIVE MODE) ===${NC}"
-fi
-
-# Mover Binary Check
-if [[ ! -x "$MOVER_BIN" ]]; then
-    log "${RED}CRITICAL: Mover Binary nicht gefunden unter $MOVER_BIN${NC}"
-    exit 1
-fi
-
-# ------------------------------------------------------------------------------
-# SHARE LOOP
-# ------------------------------------------------------------------------------
-# Alle Sections finden, die nicht GLOBAL sind
-grep "^\[" "$INI_FILE" | grep -v "\[GLOBAL\]" | tr -d '[]' | while read -r SHARE_NAME; do
-    
-    SHARE_PATH=$(get_ini_value "$SHARE_NAME" "path")
-    SHARE_EXCLUDES_RAW=$(get_ini_value "$SHARE_NAME" "excludes")
-
-    if [[ ! -d "$SHARE_PATH" ]]; then
-        log "${YELLOW}Skip: Pfad für [$SHARE_NAME] existiert nicht ($SHARE_PATH)${NC}"
-        continue
-    fi
-
-    log "\n${BLUE}Verarbeite Share: [$SHARE_NAME] ($SHARE_PATH)${NC}"
-
-    # -------------------------------------------------
-    # 1. EXCLUDE LISTEN ZUSAMMENBAUEN
-    # -------------------------------------------------
-    # Wir erstellen ein temporäres Pattern-File für grep
-    EXCLUDE_PATTERN_FILE=$(mktemp)
-    
-    # Globale Excludes hinzufügen
-    IFS=',' read -ra ADDR <<< "$GLOBAL_EXCLUDES_RAW"
-    for ex_file in "${ADDR[@]}"; do
-        if [[ -f "$ex_file" ]]; then
-            cat "$ex_file" >> "$EXCLUDE_PATTERN_FILE"
-            # Sicherstellen dass am Ende ein Newline ist
-            echo "" >> "$EXCLUDE_PATTERN_FILE"
-        fi
-    done
-
-    # Share Excludes hinzufügen
-    IFS=',' read -ra ADDR <<< "$SHARE_EXCLUDES_RAW"
-    for ex_file in "${ADDR[@]}"; do
-        if [[ -f "$ex_file" ]]; then
-            cat "$ex_file" >> "$EXCLUDE_PATTERN_FILE"
-            echo "" >> "$EXCLUDE_PATTERN_FILE"
-        fi
-    done
-
-    # Leere Zeilen aus Pattern File entfernen
-    sed -i '/^$/d' "$EXCLUDE_PATTERN_FILE"
-
-    # -------------------------------------------------
-    # 2. DATEIEN FINDEN & FILTERN
-    # -------------------------------------------------
-    # Array für Move-Kandidaten
-    FILES_TO_MOVE=()
-    
-    # Find Logik:
-    # 1. find: Suche alle Dateien
-    # 2. grep -v -F -f: Exclude (Fixed String Match aus Pattern File)
-    #    -F ist wichtig, damit Punkte im Dateinamen nicht als Regex interpretiert werden!
-    #    Wenn Pattern File leer ist, grept er nichts weg (korrekt).
-    
-    if [[ -s "$EXCLUDE_PATTERN_FILE" ]]; then
-        # Mit Exclude Filter
-        while IFS= read -r file; do
-            FILES_TO_MOVE+=("$file")
-        done < <(find "$SHARE_PATH" -type f | grep -v -F -f "$EXCLUDE_PATTERN_FILE")
-    else
-        # Keine Excludes definiert -> Alles nehmen
-        while IFS= read -r file; do
-            FILES_TO_MOVE+=("$file")
-        done < <(find "$SHARE_PATH" -type f)
-    fi
-
-    rm "$EXCLUDE_PATTERN_FILE"
-    
-    COUNT=${#FILES_TO_MOVE[@]}
-    
-    if [[ $COUNT -eq 0 ]]; then
-        log "   -> Keine Dateien zum Verschieben gefunden (oder alles excluded)."
-        continue
-    fi
-
-    log "   -> Gefunden: $COUNT Dateien zum Verschieben."
-
-    # -------------------------------------------------
-    # 3. MOVER EXECUTION (PIPE)
-    # -------------------------------------------------
-    
-    # Dateiliste als String vorbereiten (für Log & Pipe)
-    MOVE_LIST_STRING=""
-    for f in "${FILES_TO_MOVE[@]}"; do
-        MOVE_LIST_STRING+="$f"$'\n'
-        # Im Dryrun detailliert loggen, im Live nur Summary (sonst Logspam bei 10k Files)
-        if $DRY_RUN; then log "      [PLAN] $f"; fi
-    done
-
-    if ! $DRY_RUN; then
-        log "   -> Starte Mover Pipe..."
-        
-        # Die Magie: String in STDIN der Binary pipen
-        echo -n "$MOVE_LIST_STRING" | "$MOVER_BIN"
-        
-        MOVER_EXIT=$?
-        if [[ $MOVER_EXIT -eq 0 ]]; then
-            log "   ${GREEN}-> Mover erfolgreich beendet.${NC}"
-            
-            # -------------------------------------------------
-            # 4. SMART CLEANUP (Nur bei Erfolg)
-            # -------------------------------------------------
-            log "   -> Starte Smart Cleanup..."
-            
-            # Wir extrahieren die Verzeichnisse der bewegten Dateien
-            # sort -u = Unique, sort -r = Reverse (tiefste zuerst)
-            DIRS_TO_CLEAN=$(echo "$MOVE_LIST_STRING" | xargs -I {} dirname "{}" | sort -u | sort -r)
-            
-            # Cache Cleanup
-            echo "$DIRS_TO_CLEAN" | while read -r dir; do
-                [[ -z "$dir" ]] && continue
-                
-                # Prüfen ob leer
-                if [[ -d "$dir" && -z "$(ls -A "$dir")" ]]; then
-                    # Schutz-Check: Ist dies der Share Root?
-                    # Wir prüfen ob der Ordnername dem Share-Namen entspricht (einfachster Check)
-                    BASE_NAME=$(basename "$dir")
-                    if [[ "$BASE_NAME" == "$SHARE_NAME" ]]; then
-                        log "      [SKIP] Root Protection: $dir"
-                        continue
-                    fi
-
-                    # Löschen
-                    rmdir "$dir" 2>/dev/null
-                    if [[ ! -d "$dir" ]]; then
-                        log "      [CLEAN] Cache Ordner gelöscht: $dir"
-                    fi
-                fi
+# --- LOGGING & ROTATION ---
+rotate_logs() {
+    mkdir -p "$LOG_DIR_PATH"
+    if [[ -f "$LOG_FILE" ]]; then
+        local size
+        size=$(stat -c%s "$LOG_FILE")
+        if (( size > 10485760 )); then
+            echo "Rotating log file..."
+            for i in {19..1}; do
+                [[ -f "$LOG_FILE.$i" ]] && mv "$LOG_FILE.$i" "$LOG_FILE.$((i+1))"
             done
-            
-            # Array Cleanup (Optional, falls auf Array leere Ordner entstehen - meist nicht nötig beim Mover Cache->Array, 
-            # aber falls Pfade angeglichen werden sollen).
-            # Hier implementieren wir nur den Cache Cleanup wie angefordert, um Mover-Reste zu entfernen.
-
-        else
-            log "${RED}   -> FEHLER beim Mover (Exit Code $MOVER_EXIT)${NC}"
+            mv "$LOG_FILE" "$LOG_FILE.1"
         fi
-    else
-        log "   -> [DRY-RUN] Keine Aktionen durchgeführt."
+    fi
+}
+
+log_message() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local color=""
+    case "$level" in
+        "INFO") color="$GREEN" ;;
+        "WARN") color="$YELLOW" ;;
+        "ERROR") color="$RED" ;;
+    esac
+    echo -e "${color}[$timestamp] [$level] $message${NC}"
+    echo "[$timestamp] [$level] $message" >> "$LOG_FILE"
+}
+
+# --- CORE FUNCTIONS ---
+run_cleanup() {
+    local moved_files_list="$1"
+    local share_root="$2"
+    
+    if [[ -z "$moved_files_list" ]]; then return; fi
+    
+    log_message "INFO" "Starting cleanup for empty directories..."
+    local dirs_to_check
+    dirs_to_check=$(echo "$moved_files_list" | xargs -n1 dirname | sort -u | awk '{ print length, $0 }' | sort -rn | cut -d" " -f2-)
+    
+    while IFS= read -r dir_path; do
+        if [[ "$dir_path" == "$share_root" ]]; then continue; fi
+        if [[ "$dir_path" != "$share_root"* ]]; then continue; fi
+
+        if [[ -d "$dir_path" ]]; then
+            rmdir "$dir_path" 2>/dev/null
+            if [[ ! -d "$dir_path" ]]; then
+                log_message "INFO" "  -> Removed empty dir: $dir_path"
+            fi
+        fi
+    done <<< "$dirs_to_check"
+}
+
+process_share() {
+    local name="$1"
+    local path="$2"
+    local min_age="$3"
+    local excludes="$4"
+    
+    log_message "INFO" "Processing Share: [$name]"
+    
+    if [[ ! -d "$path" ]]; then
+        log_message "WARN" "  -> Path does not exist: $path (Skipping)"
+        return
     fi
 
-done
+    # 1. Prepare Excludes
+    rm -f "$TEMP_EXCLUDE_FILE"
+    touch "$TEMP_EXCLUDE_FILE"
 
-log "\n${GREEN}=== FERTIG ===${NC}"
+    if [[ "$FORCE_ALL" == false ]]; then
+        add_to_temp() {
+            local list="$1"
+            IFS=',' read -ra ADDR <<< "$list"
+            for f in "${ADDR[@]}"; do
+                [[ -f "$f" ]] && cat "$f" >> "$TEMP_EXCLUDE_FILE"
+            done
+        }
+        add_to_temp "$GLOBAL_EXCLUDES"
+        add_to_temp "$excludes"
+    fi
+
+    # 2. Determine Age (Converted to Minutes)
+    local effective_age_days
+    effective_age_days="${min_age:-$GLOBAL_MIN_AGE}"
+    
+    local find_args=""
+    
+    if [[ "$FORCE_AGE" == true ]]; then
+        log_message "WARN" "  -> FORCE enabled: Ignoring min_age ($effective_age_days days)"
+    else
+        if [[ "$effective_age_days" -gt 0 ]]; then
+            # Convert Days to Minutes for precision (Find logic: +1 day means >48h, so we use minutes)
+            local min_minutes=$((effective_age_days * 1440))
+            find_args="-cmin +$min_minutes"
+            log_message "INFO" "  -> Filter: Files older than $effective_age_days days (> $min_minutes minutes CTIME)"
+        else
+            log_message "INFO" "  -> Filter: Immediate move (0 days)"
+        fi
+    fi
+
+    # 3. Build Find Command
+    local find_cmd="find \"$path\" -depth -type f $find_args"
+
+    # 4. Execute Search
+    local candidates
+    candidates=$(eval "$find_cmd")
+
+    if [[ -z "$candidates" ]]; then
+        log_message "INFO" "  -> No files found matching age criteria."
+        return
+    fi
+
+    # 5. Apply Excludes
+    local final_list=""
+    if [[ -s "$TEMP_EXCLUDE_FILE" ]]; then
+        final_list=$(echo "$candidates" | grep -v -F -f "$TEMP_EXCLUDE_FILE")
+    else
+        final_list="$candidates"
+    fi
+
+    if [[ -z "$final_list" ]]; then
+        log_message "INFO" "  -> No files left after exclude filtering."
+        return
+    fi
+
+    # 6. Execute Mover
+    local count
+    count=$(echo "$final_list" | wc -l)
+    
+    if [[ "$DRY_RUN" == true ]]; then
+        log_message "INFO" "  -> [DRY-RUN] Would move $count files:"
+        echo "$final_list" | sed 's/^/     /'
+    else
+        log_message "INFO" "  -> Moving $count files..."
+        
+        echo "$final_list" | "$MOVER_BIN"
+        
+        local exit_code=$?
+        if [[ $exit_code -eq 0 ]]; then
+            log_message "INFO" "  -> Move successful."
+            run_cleanup "$final_list" "$path"
+        else
+            log_message "ERROR" "  -> Mover binary returned error code $exit_code"
+        fi
+    fi
+}
+
+# --- MAIN EXECUTION ---
+rotate_logs
+log_message "INFO" "=== Starting Smart Mover ==="
+
+if [[ "$DRY_RUN" == true ]]; then
+    log_message "WARN" "RUN MODE: DRY-RUN (Simulation only. Use --run to execute)"
+else
+    log_message "INFO" "RUN MODE: LIVE (Executing moves)"
+fi
+
+[[ -n "$TARGET_SHARES" ]] && log_message "INFO" "FILTER: Processing only shares: $TARGET_SHARES"
+
+current_section=""
+section_path=""
+section_age=""
+section_excludes=""
+
+while IFS='=' read -r key value; do
+    key=$(echo "$key" | xargs)
+    value=$(echo "$value" | xargs)
+
+    [[ $key =~ ^#.* ]] && continue
+    [[ -z $key ]] && continue
+
+    if [[ $key =~ ^\[(.*)\]$ ]]; then
+        if [[ -n "$current_section" ]] && [[ "$current_section" != "GLOBAL" ]]; then
+            should_run=true
+            if [[ -n "$TARGET_SHARES" ]]; then
+                if [[ ",$TARGET_SHARES," != *",$current_section,"* ]]; then
+                    should_run=false
+                fi
+            fi
+            if [[ "$should_run" == true ]]; then
+                process_share "$current_section" "$section_path" "$section_age" "$section_excludes"
+            fi
+        fi
+
+        current_section="${BASH_REMATCH[1]}"
+        section_path=""
+        section_age=""
+        section_excludes=""
+    else
+        case "$key" in
+            path)     section_path="$value" ;;
+            min_age)  section_age="$value" ;;
+            excludes) section_excludes="$value" ;;
+        esac
+    fi
+done < "$INI_FILE"
+
+if [[ -n "$current_section" ]] && [[ "$current_section" != "GLOBAL" ]]; then
+    should_run=true
+    if [[ -n "$TARGET_SHARES" ]]; then
+        if [[ ",$TARGET_SHARES," != *",$current_section,"* ]]; then
+            should_run=false
+        fi
+    fi
+    if [[ "$should_run" == true ]]; then
+        process_share "$current_section" "$section_path" "$section_age" "$section_excludes"
+    fi
+fi
+
+rm -f "$TEMP_EXCLUDE_FILE"
+log_message "INFO" "=== Finished ==="
