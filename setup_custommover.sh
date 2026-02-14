@@ -1,8 +1,8 @@
 #!/bin/bash
 # ==============================================================================
-# Smart Mover Setup V5.0
-# Language: English
-# Features: Unraid 7 detection, Multi-Pool, Smart Min-Age Fallback
+# Script: setup.sh (V6.2 Dynamic & Informative)
+# Description: Configures Global settings & Share Overrides.
+#              FIX: Shows current values before asking to Keep/Edit/Delete.
 # ==============================================================================
 
 INI_FILE="smart_mover.ini"
@@ -12,16 +12,19 @@ TEMP_INI="${INI_FILE}.tmp"
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
 RED='\033[0;31m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Header
 clear
 echo -e "${BLUE}==============================================${NC}"
-echo -e "${BLUE}   Smart Mover - Configuration Setup          ${NC}"
+echo -e "${BLUE}   Smart Mover - Dynamic Setup V6.2           ${NC}"
+echo -e "${BLUE}==============================================${NC}"
+echo -e "   This setup only configures GLOBAL settings and"
+echo -e "   OPTIONAL overrides. Paths are detected automatically."
 echo -e "${BLUE}==============================================${NC}"
 
-# Helper: Read value from INI
+# --- HELPER FUNCTIONS ---
 get_ini_value() {
     local section="$1"
     local key="$2"
@@ -30,97 +33,75 @@ get_ini_value() {
     fi
 }
 
-# Helper: Ask for file paths (Output on Stderr to keep variable clean)
 ask_for_files() {
     local prompt_text="$1"
+    local current_list="$2"
     local collected_files=""
-    
+
     echo -e "${YELLOW}$prompt_text${NC}" >&2
-    echo -e "   (Use TAB for Auto-Complete. Leave empty to finish)" >&2
     
+    # 1. Handle Existing List
+    if [[ -n "$current_list" ]]; then
+        echo -e "   Current: ${CYAN}$current_list${NC}" >&2
+        read -p "   Keep these? [Y/n (clear)]: " -n 1 -r response >&2
+        echo "" >&2
+        if [[ $response =~ ^[Nn]$ ]]; then
+            collected_files=""
+            echo -e "   -> List cleared." >&2
+        else
+            collected_files="$current_list"
+        fi
+    fi
+
+    # 2. Add New Files
+    echo -e "   (TAB for Auto-Complete. Empty to finish)" >&2
     while true; do
-        read -e -p "   > Path: " input_file
+        read -e -p "   > Add Path: " input_file
         
-        # Stop on empty input
-        if [[ -z "$input_file" ]]; then
-            break
-        fi
-
-        # Clean path
-        if [[ -f "$input_file" ]]; then
+        if [[ -z "$input_file" ]]; then break; fi
+        
+        if [[ -f "$input_file" ]]; then 
             real_path=$(realpath "$input_file")
-        else
+        else 
             real_path="$input_file"
-            # Just a warning, accept it anyway
-             echo -e "     ${YELLOW}Note: File does not exist yet.${NC}" >&2
         fi
 
-        if [[ -z "$collected_files" ]]; then
+        if [[ -z "$collected_files" ]]; then 
             collected_files="$real_path"
-        else
+        else 
             collected_files="$collected_files,$real_path"
         fi
     done
-    
-    # Echo result to Stdout for variable assignment
     echo "$collected_files"
 }
 
-# Start new INI
-echo "# Smart Mover Configuration" > "$TEMP_INI"
+# --- START INI ---
+echo "# Smart Mover Configuration (Dynamic Mode)" > "$TEMP_INI"
 
-# ------------------------------------------------------------------------------
-# 1. SYSTEM & GLOBAL
-# ------------------------------------------------------------------------------
-echo -e "\n${BLUE}[1] System Configuration${NC}"
+# --- 1. GLOBAL SETTINGS ---
+echo -e "\n${BLUE}[1] Global Settings${NC}"
 
-# Mover Binary (Unraid 7 vs 6)
-if [[ -x "/usr/libexec/unraid/move" ]]; then
-    MOVER_BIN="/usr/libexec/unraid/move"
-elif [[ -x "/usr/local/bin/move" ]]; then
-    MOVER_BIN="/usr/local/bin/move"
-else
-    echo -e "${RED}ERROR: Mover Binary not found!${NC}"
-    rm "$TEMP_INI"
-    exit 1
-fi
+# Mover Binary
+if [[ -x "/usr/libexec/unraid/move" ]]; then MOVER_BIN="/usr/libexec/unraid/move";
+elif [[ -x "/usr/local/bin/move" ]]; then MOVER_BIN="/usr/local/bin/move";
+else echo -e "${RED}Error: Mover binary not found!${NC}"; rm "$TEMP_INI"; exit 1; fi
 echo -e "   Mover Binary: ${GREEN}$MOVER_BIN${NC}"
 
-# Log File
+# Log Path
 OLD_LOG=$(get_ini_value "GLOBAL" "log_file")
-DEFAULT_LOG="/mnt/user/system/scripts/smart_mover.log"
-[[ -n "$OLD_LOG" ]] && DEFAULT_LOG="$OLD_LOG"
+DEF_LOG="${OLD_LOG:-/mnt/user/system/scripts/smart_mover.log}"
+read -e -i "$DEF_LOG" -p "   Logfile Path: " FINAL_LOG
 
-echo -e "\n   Where should logs be stored?"
-read -e -i "$DEFAULT_LOG" -p "   > Logfile Path: " FINAL_LOG
-
-# Global Min Age
+# Global Age
 OLD_AGE=$(get_ini_value "GLOBAL" "min_age")
-DEFAULT_AGE="${OLD_AGE:-0}"
-
-echo -e "\n   Global Minimum Age (Days)?"
-echo -e "   (0 = Immediate move. Can be overridden per share)"
-read -e -i "$DEFAULT_AGE" -p "   > Days: " GLOBAL_MIN_AGE
+DEF_AGE="${OLD_AGE:-0}"
+read -e -i "$DEF_AGE" -p "   Global Min Age (Days): " GLOBAL_MIN_AGE
 
 # Global Excludes
-echo -e "\n${BLUE}[2] Global Excludes${NC}"
-OLD_GLOBAL=$(get_ini_value "GLOBAL" "global_excludes")
+OLD_EXC=$(get_ini_value "GLOBAL" "global_excludes")
+echo -e "   Global Excludes (apply to ALL shares):"
+GLOBAL_EXCLUDES=$(ask_for_files "Files:" "$OLD_EXC")
 
-echo -e "   Global excludes apply to ALL shares."
-CHOICE="y"
-if [[ -n "$OLD_GLOBAL" ]]; then
-    echo -e "   Current: $OLD_GLOBAL"
-    read -p "   Redefine? [y/N]: " -n 1 -r REPLY_EXC
-    echo ""
-    [[ ! $REPLY_EXC =~ ^[Yy]$ ]] && CHOICE="n"
-fi
-
-GLOBAL_EXCLUDES="$OLD_GLOBAL"
-if [[ "$CHOICE" =~ ^[Yy]$ ]]; then
-    GLOBAL_EXCLUDES=$(ask_for_files "Please specify Global Exclude files:")
-fi
-
-# Write Global Section
 echo "[GLOBAL]" >> "$TEMP_INI"
 echo "mover_bin=$MOVER_BIN" >> "$TEMP_INI"
 echo "log_file=$FINAL_LOG" >> "$TEMP_INI"
@@ -128,10 +109,10 @@ echo "min_age=$GLOBAL_MIN_AGE" >> "$TEMP_INI"
 echo "global_excludes=$GLOBAL_EXCLUDES" >> "$TEMP_INI"
 echo "" >> "$TEMP_INI"
 
-# ------------------------------------------------------------------------------
-# 2. SHARES (Loop)
-# ------------------------------------------------------------------------------
-echo -e "\n${BLUE}[3] Share Configuration${NC}"
+
+# --- 2. SHARE OVERRIDES ---
+echo -e "\n${BLUE}[2] Share Overrides (Optional)${NC}"
+echo -e "   Only configure shares that need DIFFERENT settings than Global."
 
 for config_file in /boot/config/shares/*.cfg; do
     SHARE_NAME=$(basename "$config_file" .cfg)
@@ -139,81 +120,70 @@ for config_file in /boot/config/shares/*.cfg; do
     # Check if Cache is used
     if grep -qE 'shareUseCache="(yes|prefer)"' "$config_file"; then
         
-        # Check if already configured
-        OLD_PATH=$(get_ini_value "$SHARE_NAME" "path")
+        # Check if Override exists in INI
+        OLD_S_AGE=$(get_ini_value "$SHARE_NAME" "min_age")
+        OLD_S_EXC=$(get_ini_value "$SHARE_NAME" "excludes")
         
-        # Multi-Pool Detection
-        POOL_NAME=$(grep 'shareCachePool=' "$config_file" | cut -d'"' -f2)
-        [[ -z "$POOL_NAME" ]] && POOL_NAME="cache"
+        HAS_OVERRIDE=false
+        [[ -n "$OLD_S_AGE" || -n "$OLD_S_EXC" ]] && HAS_OVERRIDE=true
         
         echo -e "\n----------------------------------------------"
-        if [[ -n "$OLD_PATH" ]]; then
-            # Existing Entry
-            echo -e "Share ${GREEN}[$SHARE_NAME]${NC} is configured."
-            echo -e "Options: [K]eep | [E]dit | [D]elete"
-            read -p "   Choice [K/e/d]: " -n 1 -r ACTION
-            echo ""
+        if [[ "$HAS_OVERRIDE" == true ]]; then
+            echo -e "Share ${GREEN}[$SHARE_NAME]${NC} has custom settings."
+            
+            # --- NEU: INFO ANZEIGE ---
+            # Zeigt die aktuellen Werte an, bevor gefragt wird
+            DISPLAY_AGE="${OLD_S_AGE:-Default ($GLOBAL_MIN_AGE)}"
+            
+            echo -e "   Current Age:      ${CYAN}$DISPLAY_AGE${NC} days"
+            if [[ -n "$OLD_S_EXC" ]]; then
+                echo -e "   Current Excludes: ${CYAN}$OLD_S_EXC${NC}"
+            else
+                echo -e "   Current Excludes: ${CYAN}None${NC}"
+            fi
+            # -------------------------
+
+            echo -e "Options: [K]eep | [E]dit | [D]elete (Revert to Global)"
+            read -p "   Choice [K/e/d]: " -n 1 -r ACTION; echo ""
             
             case "$ACTION" in
-                [Dd]* )
-                    echo -e "   ${RED}-> Share '$SHARE_NAME' removed.${NC}"
-                    continue ;;
-                [Ee]* )
-                    DO_CONFIG=true ;;
-                * )
-                    # Keep (Copy values exactly)
-                    OLD_EXC=$(get_ini_value "$SHARE_NAME" "excludes")
-                    OLD_S_AGE=$(get_ini_value "$SHARE_NAME" "min_age")
-                    
-                    echo "[$SHARE_NAME]" >> "$TEMP_INI"
-                    echo "path=$OLD_PATH" >> "$TEMP_INI"
-                    # Only write age if it was set
-                    [[ -n "$OLD_S_AGE" ]] && echo "min_age=$OLD_S_AGE" >> "$TEMP_INI"
-                    echo "excludes=$OLD_EXC" >> "$TEMP_INI"
-                    echo "" >> "$TEMP_INI"
-                    continue ;;
+                [Dd]*) 
+                    echo -e "   -> Reverted to Global defaults."
+                    continue ;; 
+                [Ee]*) DO_CONFIG=true ;;
+                *) # Keep
+                   echo "[$SHARE_NAME]" >> "$TEMP_INI"
+                   [[ -n "$OLD_S_AGE" ]] && echo "min_age=$OLD_S_AGE" >> "$TEMP_INI"
+                   [[ -n "$OLD_S_EXC" ]] && echo "excludes=$OLD_S_EXC" >> "$TEMP_INI"
+                   echo "" >> "$TEMP_INI"
+                   continue ;; 
             esac
         else
-            # New Share
-            echo -e "New Cache-Share found: ${BLUE}[$SHARE_NAME]${NC} (Pool: $POOL_NAME)"
-            read -p "   Configure? [y/N]: " -n 1 -r ADD_NEW
-            echo ""
+            echo -e "Share ${BLUE}[$SHARE_NAME]${NC} uses Global defaults."
+            read -p "   Create custom rule? [y/N]: " -n 1 -r ADD_NEW; echo ""
             if [[ "$ADD_NEW" =~ ^[Yy]$ ]]; then DO_CONFIG=true; else DO_CONFIG=false; fi
         fi
 
-        if [ "$DO_CONFIG" = true ]; then
-            # 1. Path Suggestion
-            SUGGESTED_PATH="/mnt/${POOL_NAME}/${SHARE_NAME}"
-            read -e -i "$SUGGESTED_PATH" -p "   Cache Path: " SHARE_CACHE_PATH
+        if [[ "$DO_CONFIG" == true ]]; then
+            echo -e "   Defining Override for '$SHARE_NAME':"
             
-            # 2. Min Age (Smart Logic)
-            echo -e "   Minimum Age for this share?"
-            echo -e "   (Leave EMPTY to use Global Default: $GLOBAL_MIN_AGE days)"
+            # Min Age
+            DEF_S_AGE="${OLD_S_AGE:-$GLOBAL_MIN_AGE}"
+            read -e -i "$DEF_S_AGE" -p "   Custom Min Age (Empty = Global): " SHARE_AGE
             
-            # Get old value for suggestion, but don't force it
-            OLD_S_AGE=$(get_ini_value "$SHARE_NAME" "min_age")
-            read -e -i "$OLD_S_AGE" -p "   > Days: " SHARE_AGE
+            # Excludes
+            SHARE_EXCLUDES=$(ask_for_files "   Custom Exclude files:" "$OLD_S_EXC")
             
-            # 3. Excludes
-            SHARE_EXCLUDES=$(ask_for_files "Exclude files for '$SHARE_NAME':")
-            
-            # Write to INI
+            # Write Section (NO PATH!)
             echo "[$SHARE_NAME]" >> "$TEMP_INI"
-            echo "path=$SHARE_CACHE_PATH" >> "$TEMP_INI"
-            
-            # LOGIC: Only write min_age if user entered something
-            if [[ -n "$SHARE_AGE" ]]; then
-                echo "min_age=$SHARE_AGE" >> "$TEMP_INI"
-            fi
-            
-            echo "excludes=$SHARE_EXCLUDES" >> "$TEMP_INI"
+            [[ -n "$SHARE_AGE" ]] && echo "min_age=$SHARE_AGE" >> "$TEMP_INI"
+            [[ -n "$SHARE_EXCLUDES" ]] && echo "excludes=$SHARE_EXCLUDES" >> "$TEMP_INI"
             echo "" >> "$TEMP_INI"
-            echo -e "   ${GREEN}-> Saved.${NC}"
+            echo -e "   ${GREEN}-> Override saved.${NC}"
         fi
     fi
 done
 
-# Finalize
 mv "$TEMP_INI" "$INI_FILE"
 echo -e "\n${BLUE}==============================================${NC}"
-echo -e "${GREEN}Configuration successfully saved: $INI_FILE${NC}"
+echo -e "${GREEN}Configuration saved!${NC}"
