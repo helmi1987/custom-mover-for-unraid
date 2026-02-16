@@ -27,7 +27,7 @@ The wizard will generate a file named `smart_mover.ini`.
 ### 2\. Configuration (smart\_mover.ini)
 
 You can edit the INI file manually or rerun `setup.sh` to update it.
-
+```
 \[GLOBAL\]
 mover\_bin=/usr/libexec/unraid/move
 min\_age=0
@@ -37,7 +37,7 @@ global\_excludes=/mnt/user/system/excludes/global.txt
 path=/mnt/cache/Movies
 min\_age=30
 excludes=/mnt/user/system/excludes/movies.txt
-
+```
 ## ⚙️ Usage & CLI Arguments
 
 The script uses safety flags. Running it without arguments will perform a **Simulation (Dry-Run)**.
