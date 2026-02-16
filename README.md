@@ -28,14 +28,14 @@ The wizard will generate a file named `smart_mover.ini`.
 
 You can edit the INI file manually or rerun `setup.sh` to update it.
 ```
-\[GLOBAL\]
+[GLOBAL]
 mover\_bin=/usr/libexec/unraid/move
-min\_age=0
-global\_excludes=/mnt/user/system/excludes/global.txt
+min_age=0
+global_excludes=/mnt/user/system/excludes/global.txt
 
-\[Movies\]
+[Movies]
 path=/mnt/cache/Movies
-min\_age=30
+min_age=30
 excludes=/mnt/user/system/excludes/movies.txt
 ```
 ## ⚙️ Usage & CLI Arguments
