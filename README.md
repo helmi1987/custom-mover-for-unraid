@@ -29,7 +29,7 @@ The wizard will generate a file named `smart_mover.ini`.
 You can edit the INI file manually or rerun `setup.sh` to update it.
 ```
 [GLOBAL]
-mover\_bin=/usr/libexec/unraid/move
+mover_bin=/usr/libexec/unraid/move
 min_age=0
 global_excludes=/mnt/user/system/excludes/global.txt
 
