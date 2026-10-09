@@ -7,11 +7,12 @@
 * **Correct direction per share** – read from `/boot/config/shares/<share>.cfg` at runtime:
   `shareUseCache="yes"` → pool → array (or secondary pool), `"prefer"` → array (or secondary pool) → pool, `"only"`/`"no"` → skipped.
 * **Age filter** in days, based on `ctime` (default: the time the file landed on the pool, survives `rsync -a`) or `mtime` – global or per share. Not applied to `prefer` shares unless set per share.
-* **Exclude lists** – one or more files per share plus global ones. Entries: a directory (protects the subtree), an exact file path (an [EmbyCache](https://github.com/helmi1987/embycache-for-unraid) exclude list works unchanged), a glob (`*.nfo`, `Season 0*`) or a plain substring. Comments, blank lines and CRLF are tolerated; `/mnt/user/<share>/…` paths are translated to the scanned pool path.
-* **Threshold** – `move_when_used_above=<percent>`: only move when the pool is fuller than X % (global or per share).
+* **Exclude lists** – one or more files per share plus global ones. Entries: a directory (protects the subtree), an exact file path (an [EmbyCache](https://github.com/helmi1987/embycache-for-unraid) exclude list works unchanged), a glob (`*.nfo`, `Season 0*`) or a plain substring. Comments (`#`, `;`), blank lines and CRLF are tolerated; `/mnt/user/<share>/…` and `/mnt/user0/<share>/…` paths are translated to the scanned source path.
+* **Threshold** – `move_when_used_above=<percent>`: only move when the pool is fuller than X % (global or per share). Applies to `yes` shares (pool → array) only.
 * **Verification** – after the move the script checks what is still on the source side (in use, or already present at the destination) and reports it.
 * **Cleanup** – empty directories left behind by moved files are removed up to (never including) the share root.
-* **Safe by default** – dry-run unless `--run`; `flock` against parallel runs; refuses to start while the stock mover is running.
+* **Safe by default** – dry-run unless `--run`; `flock` against parallel runs (`.custommover.lock` next to the scripts); refuses to start while the stock mover is running.
+* **Log rotation** – the log is rotated at 10 MB, up to 20 old files (`smart_mover.log.1` … `.20`).
 * No dependencies beyond bash, findutils and coreutils.
 
 ## Installation
@@ -41,7 +42,7 @@ move_when_used_above=0
 move_prefer_shares=yes
 # 0-3, passed as -d to the move binary (shown with CUSTOMMOVER_LOG_LEVEL=DEBUG)
 mover_debug=0
-# dry-run lines shown on the console
+# dry-run lines shown on the console (not asked by the wizard, add manually)
 max_list=50
 global_excludes=/mnt/user/system/excludes/global.txt
 
@@ -57,7 +58,9 @@ move_when_used_above=80
 skip=yes
 ```
 
-Per-share keys: `min_age`, `age_stat`, `excludes` (comma separated), `move_when_used_above`, `skip=yes`. The section name is the share name; paths are never stored. Comments go on their own line (`#` or `;`), not behind a value. Values from the INI can be overridden with environment variables, see `--help`.
+Defaults if a GLOBAL key is missing: `mover_bin` auto-detected (`/usr/libexec/unraid/move`, `/usr/local/sbin/move`, `/usr/local/bin/move`), `log_file=<script dir>/smart_mover.log`, `min_age=0`, `age_stat=ctime`, `move_when_used_above=0`, `move_prefer_shares=yes`, `mover_debug=0`, `max_list=50`. `global_excludes` is a comma separated list.
+
+Per-share keys: `min_age`, `age_stat`, `excludes` (comma separated, in addition to `global_excludes`), `move_when_used_above`, `skip=yes`. The section name is the share name; paths are never stored. Comments go on their own line (`#` or `;`), not behind a value. Values from the INI can be overridden with environment variables, see `--help`.
 
 ### Exclude file format
 
@@ -72,6 +75,8 @@ Per-share keys: `min_age`, `age_stat`, `excludes` (comma separated), `move_when_
 Trailers
 ```
 
+Globs without a `/` match the file or directory name, globs with a `/` match the full path. A trailing `/` is ignored.
+
 ## Usage
 
 | Option | Effect |
@@ -84,13 +89,14 @@ Trailers
 | `--list-shares` | Show discovered shares, direction and effective settings. |
 | `--help` | Full help including environment variables. |
 
-Environment variables: `CUSTOMMOVER_MODE` (dry/run), `CUSTOMMOVER_FORCE` (age/all), `CUSTOMMOVER_SHARES`, `CUSTOMMOVER_INI`, `CUSTOMMOVER_LOG_LEVEL` (DEBUG shows the mover's own output), `CUSTOMMOVER_MOVER_DEBUG`, `CUSTOMMOVER_IGNORE_MOVER=1`.
+Environment variables (CLI flags take precedence): `CUSTOMMOVER_MODE` (dry/run), `CUSTOMMOVER_FORCE` (age/all), `CUSTOMMOVER_SHARES`, `CUSTOMMOVER_INI`, `CUSTOMMOVER_LOG_LEVEL` (DEBUG shows the mover's own output), `CUSTOMMOVER_MOVER_DEBUG` (overrides `mover_debug`), `CUSTOMMOVER_IGNORE_MOVER=1`, `CUSTOMMOVER_SHARES_DIR` and `CUSTOMMOVER_MNT` (for tests; default `/boot/config/shares` and `/mnt`). The setup wizard honours `CUSTOMMOVER_INI` and `CUSTOMMOVER_SHARES_DIR`.
 
-Exit codes: 0 ok, 1 configuration error, 2 another Smart Mover or the stock mover is running.
+Exit codes: 0 ok, 1 configuration error / unknown option / move binary missing, 2 another Smart Mover or the stock mover is running. Errors in a single share are logged and that share is skipped; the run still ends with 0.
 
 ## Notes
 
 * **ctime vs mtime.** `ctime` is the inode change time – it is set when the file is created on the pool and cannot be carried over from the source, which makes it the right measure for "how long has this been on the cache". It is also reset by `chmod`/`chown` (e.g. Unraid's *New Permissions* tool or a container fixing ownership), which makes the file look new again. Use `mtime` for shares where that happens regularly.
 * **`prefer` shares** are moved array → pool, exactly like the stock mover does. If you only want pool → array behaviour, set `move_prefer_shares=no`.
-* **Files that stay behind** after a live run are listed as WARN: the move binary skips files that are open (`fuser`) and files that already exist at the destination. Nothing is ever deleted by this script except empty directories.
+* **Symlinks** are moved like files. File names containing a newline are skipped with a WARN (the move binary reads one path per line).
+* **Files that stay behind** after a live run are listed as WARN (first 10): the move binary skips files that are open (`fuser`) and files that already exist at the destination. Nothing is ever deleted by this script except empty directories.
 * **Together with EmbyCache:** point a share's `excludes=` at `embycache_exclude.txt` and the cached media is never moved back by this script – no Mover Tuning needed.
