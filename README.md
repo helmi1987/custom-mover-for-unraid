@@ -42,7 +42,7 @@ move_when_used_above=0
 move_prefer_shares=yes
 # 0-3, passed as -d to the move binary (shown with CUSTOMMOVER_LOG_LEVEL=DEBUG)
 mover_debug=0
-# dry-run lines shown on the console (not asked by the wizard, add manually)
+# dry-run lines shown on the console
 max_list=50
 global_excludes=/mnt/user/system/excludes/global.txt
 

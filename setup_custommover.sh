@@ -105,6 +105,7 @@ echo -e "   ${CYAN}ctime = time the file landed on the pool (survives rsync -a, 
 OLD=$(get_ini_value GLOBAL move_when_used_above); GLOBAL_THRESHOLD=$(ask_int "   Only move when pool usage is above % (0 = always)" "${OLD:-0}" 0 100)
 OLD=$(get_ini_value GLOBAL move_prefer_shares); MOVE_PREFER=$(ask_choice "   Also handle 'prefer' shares (array -> pool, like the stock mover)" "${OLD:-yes}" "yes no")
 OLD=$(get_ini_value GLOBAL mover_debug); MOVER_DEBUG=$(ask_int "   Mover debug level 0-3 (1 logs every moved file)" "${OLD:-0}" 0 3)
+OLD=$(get_ini_value GLOBAL max_list); MAX_LIST=$(ask_int "   Dry-run: max files listed on the console (full list in the log)" "${OLD:-50}" 0 100000)
 OLD=$(get_ini_value GLOBAL global_excludes); GLOBAL_EXCLUDES=$(ask_for_files "   Global exclude files (apply to ALL shares):" "$OLD")
 
 {
@@ -117,6 +118,7 @@ OLD=$(get_ini_value GLOBAL global_excludes); GLOBAL_EXCLUDES=$(ask_for_files "  
     echo "move_when_used_above=$GLOBAL_THRESHOLD"
     echo "move_prefer_shares=$MOVE_PREFER"
     echo "mover_debug=$MOVER_DEBUG"
+    echo "max_list=$MAX_LIST"
     echo "global_excludes=$GLOBAL_EXCLUDES"
     echo ""
 } > "$TEMP_INI"
