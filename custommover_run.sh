@@ -31,6 +31,7 @@
 #   CUSTOMMOVER_IGNORE_MOVER  1 = run even if the stock Unraid mover is currently running
 #   CUSTOMMOVER_SHARES_DIR    share config dir           (default: /boot/config/shares, for tests)
 #   CUSTOMMOVER_MNT           mount root                 (default: /mnt, for tests)
+#   CUSTOMMOVER_ZFS           zfs command                (default: zfs, for tests)
 #
 # INI (smart_mover.ini):
 #   [GLOBAL]  mover_bin, log_file, min_age (days), age_stat (ctime|mtime), global_excludes (comma list),
@@ -54,6 +55,7 @@ SHARES_DIR="${CUSTOMMOVER_SHARES_DIR:-/boot/config/shares}"
 MNT="${CUSTOMMOVER_MNT:-/mnt}"
 LOCK_FILE="$SCRIPT_DIR/.custommover.lock"
 MOVER_PIDFILE="/var/run/mover.pid"
+ZFS_BIN="${CUSTOMMOVER_ZFS:-zfs}"
 LOG_LEVEL="${CUSTOMMOVER_LOG_LEVEL:-INFO}"
 
 DRY_RUN=true
@@ -165,6 +167,25 @@ stock_mover_running() {
     [[ -n "$pid" && -d "/proc/$pid" ]]
 }
 
+# Used space of a pool in percent -> POOL_USED (empty if unknown), POOL_USED_SRC (zfs|df).
+# On ZFS /mnt/<pool> is only the pool's root dataset and the shares are child datasets,
+# so df shows next to nothing there: take used/(used+avail) of the whole pool from zfs.
+# Not ZFS, or zfs gives no numbers: df (rounded up, like df itself).
+pool_used_pct() {  # pool
+    local path="$MNT/$1" ds="" used avail
+    POOL_USED=""; POOL_USED_SRC="df"
+    if command -v "$ZFS_BIN" >/dev/null 2>&1 && ds=$("$ZFS_BIN" list -H -o name "$path" 2>/dev/null) && [[ -n "$ds" ]]; then
+        if read -r used avail < <("$ZFS_BIN" list -Hp -o used,avail "${ds%%/*}" 2>/dev/null) \
+            && is_int "$used" && is_int "$avail" && (( used + avail > 0 )); then
+            POOL_USED=$(( (used * 100 + used + avail - 1) / (used + avail) ))
+            POOL_USED_SRC="zfs"
+            return 0
+        fi
+        log WARN "  zfs gave no usage for pool ${ds%%/*} – falling back to df"
+    fi
+    POOL_USED=$(df --output=pcent "$path" 2>/dev/null | tail -1 | tr -dc '0-9')
+}
+
 # ------------------------------------------------------------------ Excludes
 # Builds EXCL_ARGS (find expression fragments) for one share. Patterns pointing into
 # /mnt/user/<share> or /mnt/user0/<share> are rewritten to the scanned source root.
@@ -261,13 +282,12 @@ process_share() {  # name mode pool pool2
 
     # Threshold: only move when the pool that should be freed is fuller than X% (pool -> array shares only)
     if [[ "$mode" == "yes" ]] && (( threshold > 0 )) && [[ "$FORCE_AGE" == false ]]; then
-        local used
-        used=$(df --output=pcent "$MNT/$pool" 2>/dev/null | tail -1 | tr -dc '0-9')
-        if [[ -n "$used" ]] && (( used < threshold )); then
-            log INFO "  pool $pool at ${used}% < threshold ${threshold}% – nothing moved"
+        pool_used_pct "$pool"
+        if [[ -n "$POOL_USED" ]] && (( POOL_USED < threshold )); then
+            log INFO "  pool $pool at ${POOL_USED}% ($POOL_USED_SRC) < threshold ${threshold}% – nothing moved"
             return 0
         fi
-        log INFO "  pool $pool at ${used:-?}% >= threshold ${threshold}%"
+        log INFO "  pool $pool at ${POOL_USED:-?}% ($POOL_USED_SRC) >= threshold ${threshold}%"
     fi
 
     # Age filter

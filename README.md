@@ -8,7 +8,7 @@
   `shareUseCache="yes"` → pool → array (or secondary pool), `"prefer"` → array (or secondary pool) → pool, `"only"`/`"no"` → skipped.
 * **Age filter** in days, based on `ctime` (default: the time the file landed on the pool, survives `rsync -a`) or `mtime` – global or per share. Not applied to `prefer` shares unless set per share.
 * **Exclude lists** – one or more files per share plus global ones. Entries: a directory (protects the subtree), an exact file path (an [EmbyCache](https://github.com/helmi1987/embycache-for-unraid) exclude list works unchanged), a glob (`*.nfo`, `Season 0*`) or a plain substring. Comments (`#`, `;`), blank lines and CRLF are tolerated; `/mnt/user/<share>/…` and `/mnt/user0/<share>/…` paths are translated to the scanned source path.
-* **Threshold** – `move_when_used_above=<percent>`: only move when the pool is fuller than X % (global or per share). Applies to `yes` shares (pool → array) only.
+* **Threshold** – `move_when_used_above=<percent>`: only move when the pool is fuller than X % (global or per share). Applies to `yes` shares (pool → array) only. On ZFS pools the whole pool counts (`zfs list` used/available), since `/mnt/<pool>` is only the pool's root dataset and `df` shows next to nothing there; other pools use `df`.
 * **Verification** – after the move the script checks what is still on the source side (in use, or already present at the destination) and reports it.
 * **Cleanup** – empty directories left behind by moved files are removed up to (never including) the share root.
 * **Safe by default** – dry-run unless `--run`; `flock` against parallel runs (`.custommover.lock` next to the scripts); refuses to start while the stock mover is running.
@@ -89,7 +89,7 @@ Globs without a `/` match the file or directory name, globs with a `/` match the
 | `--list-shares` | Show discovered shares, direction and effective settings. |
 | `--help` | Full help including environment variables. |
 
-Environment variables (CLI flags take precedence): `CUSTOMMOVER_MODE` (dry/run), `CUSTOMMOVER_FORCE` (age/all), `CUSTOMMOVER_SHARES`, `CUSTOMMOVER_INI`, `CUSTOMMOVER_LOG_LEVEL` (DEBUG shows the mover's own output), `CUSTOMMOVER_MOVER_DEBUG` (overrides `mover_debug`), `CUSTOMMOVER_IGNORE_MOVER=1`, `CUSTOMMOVER_SHARES_DIR` and `CUSTOMMOVER_MNT` (for tests; default `/boot/config/shares` and `/mnt`). The setup wizard honours `CUSTOMMOVER_INI` and `CUSTOMMOVER_SHARES_DIR`.
+Environment variables (CLI flags take precedence): `CUSTOMMOVER_MODE` (dry/run), `CUSTOMMOVER_FORCE` (age/all), `CUSTOMMOVER_SHARES`, `CUSTOMMOVER_INI`, `CUSTOMMOVER_LOG_LEVEL` (DEBUG shows the mover's own output), `CUSTOMMOVER_MOVER_DEBUG` (overrides `mover_debug`), `CUSTOMMOVER_IGNORE_MOVER=1`, `CUSTOMMOVER_SHARES_DIR`, `CUSTOMMOVER_MNT` and `CUSTOMMOVER_ZFS` (for tests; default `/boot/config/shares`, `/mnt` and `zfs`). The setup wizard honours `CUSTOMMOVER_INI` and `CUSTOMMOVER_SHARES_DIR`.
 
 Exit codes: 0 ok, 1 configuration error / unknown option / move binary missing, 2 another Smart Mover or the stock mover is running. Errors in a single share are logged and that share is skipped; the run still ends with 0.
 
