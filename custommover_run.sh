@@ -42,6 +42,7 @@
 # Exclude files: one entry per line, comments (#) and blank lines ignored, CRLF tolerated.
 #   /abs/path/dir          protects the directory and everything below it
 #   /abs/path/file.mkv     protects exactly that file (an EmbyCache exclude list works as-is)
+#                          absolute entries are taken literally: [ ] * ? are part of the name
 #   *.nfo  or  Season 0*   glob against the file name (no slash) or the full path (with slash)
 #   anything else          substring match on the full path (legacy behaviour)
 #   /mnt/user/<share>/...  and /mnt/user0/<share>/... are translated to the scanned source root
@@ -187,6 +188,14 @@ pool_used_pct() {  # pool
 }
 
 # ------------------------------------------------------------------ Excludes
+# An absolute entry names exactly one file or folder, so find must match it literally:
+# escape what find's -path reads as a pattern (\ [ ] * ?), e.g. «Film (2020) [1080p].mkv».
+find_literal() {  # path -> FIND_LITERAL (no subshell: an EmbyCache list has many lines)
+    local s="$1" bs='\'
+    s="${s//"$bs"/"$bs$bs"}"; s="${s//"["/"$bs["}"; s="${s//"]"/"$bs]"}"; s="${s//"*"/"$bs*"}"; s="${s//"?"/"$bs?"}"
+    FIND_LITERAL="$s"
+}
+
 # Builds EXCL_ARGS (find expression fragments) for one share. Patterns pointing into
 # /mnt/user/<share> or /mnt/user0/<share> are rewritten to the scanned source root.
 build_excludes() {  # share_name source_root exclude_files(comma list)...
@@ -206,8 +215,9 @@ build_excludes() {  # share_name source_root exclude_files(comma list)...
             line="${line/#$MNT\/user\/$share/$src}"
             line="${line/#$MNT\/user0\/$share/$src}"
             case "$line" in
-                /*)  # absolute path: file or subtree
-                    EXCL_ARGS+=(-o -path "$line" -o -path "$line/*") ;;
+                /*)  # absolute path: file or subtree, matched literally
+                    find_literal "$line"
+                    EXCL_ARGS+=(-o -path "$FIND_LITERAL" -o -path "$FIND_LITERAL/*") ;;
                 *[\*\?\[]*)  # glob
                     if [[ "$line" == */* ]]; then EXCL_ARGS+=(-o -path "$line"); else EXCL_ARGS+=(-o -name "$line"); fi ;;
                 *)   # substring (legacy)

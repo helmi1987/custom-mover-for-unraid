@@ -75,7 +75,7 @@ Per-share keys: `min_age`, `age_stat`, `excludes` (comma separated, in addition 
 Trailers
 ```
 
-Globs without a `/` match the file or directory name, globs with a `/` match the full path. A trailing `/` is ignored.
+Globs without a `/` match the file or directory name, globs with a `/` match the full path. A trailing `/` is ignored. Entries starting with `/` are taken literally: `[ ] * ?` are part of the name, so `Film (2020) [1080p].mkv` protects exactly that file.
 
 ## Usage
 
