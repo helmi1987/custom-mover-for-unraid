@@ -1,0 +1,5 @@
+# Runtime files created next to the scripts
+.custommover.lock
+smart_mover.ini
+smart_mover.log
+smart_mover.log.*
